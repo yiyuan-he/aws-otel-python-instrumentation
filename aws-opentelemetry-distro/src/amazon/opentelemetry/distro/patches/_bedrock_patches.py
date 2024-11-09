@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import abc
 import inspect
-from typing import Dict, Optional
+import json
+from typing import Any, Dict, Optional
 
 from amazon.opentelemetry.distro._aws_attribute_keys import (
     AWS_BEDROCK_AGENT_ID,
@@ -11,7 +12,7 @@ from amazon.opentelemetry.distro._aws_attribute_keys import (
     AWS_BEDROCK_GUARDRAIL_ID,
     AWS_BEDROCK_KNOWLEDGE_BASE_ID,
 )
-from amazon.opentelemetry.distro._aws_span_processing_util import GEN_AI_REQUEST_MODEL, GEN_AI_SYSTEM
+from amazon.opentelemetry.distro._aws_span_processing_util import GEN_AI_REQUEST_MAX_TOKENS, GEN_AI_REQUEST_MODEL, GEN_AI_REQUEST_TEMPERATURE, GEN_AI_REQUEST_TOP_P, GEN_AI_RESPONSE_FINISH_REASONS, GEN_AI_SYSTEM, GEN_AI_USAGE_INPUT_TOKENS, GEN_AI_USAGE_OUTPUT_TOKENS
 from opentelemetry.instrumentation.botocore.extensions.types import (
     _AttributeMapT,
     _AwsSdkCallContext,
@@ -19,6 +20,7 @@ from opentelemetry.instrumentation.botocore.extensions.types import (
     _BotoResultT,
 )
 from opentelemetry.trace.span import Span
+from botocore.response import StreamingBody
 
 _AGENT_ID: str = "agentId"
 _KNOWLEDGE_BASE_ID: str = "knowledgeBaseId"
@@ -240,3 +242,58 @@ class _BedrockRuntimeExtension(_AwsSdkExtension):
         model_id = self._call_context.params.get(_MODEL_ID)
         if model_id:
             attributes[GEN_AI_REQUEST_MODEL] = model_id
+
+            # Get the request body if it exists
+            body = self._call_context.params.get('body')
+            if body:
+                try:
+                    request_body = json.loads(body)
+                    if "amazon.titan" in model_id:
+                        self._extract_titan_attributes(attributes, request_body)
+                except json.JSONDecodeError:
+                    print("Error: Unable to parse the body as JSON")
+
+    def _extract_titan_attributes(self, attributes, request_body):
+        config = request_body.get('textGenerationConfig', {})
+        self._set_if_not_none(attributes, GEN_AI_REQUEST_MAX_TOKENS, config.get('maxTokenCount'))
+        self._set_if_not_none(attributes, GEN_AI_REQUEST_TEMPERATURE, config.get('temperature'))
+        self._set_if_not_none(attributes, GEN_AI_REQUEST_TOP_P, config.get("topP"))
+
+    @staticmethod
+    def _set_if_not_none(attributes, key, value):
+        if value is not None:
+            attributes[key] = value
+
+    def on_success(self, span: Span, result: Dict[str, Any]):
+        model_id = self._call_context.params.get(_MODEL_ID)
+
+        if not model_id:
+            return
+
+        if 'body' in result and isinstance(result['body'], StreamingBody):
+            try:
+                # Read the entire content of the StreamingBody
+                body_content = result['body'].read()
+                # Decode the bytes to string and parse as JSON
+                response_body = json.loads(body_content.decode('utf-8'))
+                if "amazon.titan" in model_id:
+                    self._handle_amazon_titan_response(span, response_body)
+            except json.JSONDecodeError:
+                print("Error: Unable to parse the response body as JSON")
+            except Exception as e:
+                print(f"Error processing response: {str(e)}")
+            finally:
+                # Make sure to close the stream
+                result['body'].close()
+
+    def _handle_amazon_titan_response(self, span: Span, response_body: Dict[str, Any]):
+        if "inputTextTokenCount" in response_body:
+            span.set_attribute(GEN_AI_USAGE_INPUT_TOKENS, response_body['inputTextTokenCount'])
+
+            result = response_body['results'][0]
+            # TODO: Need null check for result here?
+            if 'tokenCount' in result:
+                span.set_attribute(GEN_AI_USAGE_OUTPUT_TOKENS, result['tokenCount'])
+            if 'completionReason' in result:
+                span.set_attribute(GEN_AI_RESPONSE_FINISH_REASONS, [result['completionReason']])
+

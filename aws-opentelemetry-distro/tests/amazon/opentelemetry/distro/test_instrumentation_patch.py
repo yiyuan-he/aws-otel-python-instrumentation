@@ -1,10 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
+from io import BytesIO
 import os
+import json
 from typing import Any, Dict
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from botocore.response import StreamingBody
 import gevent.monkey
 import pkg_resources
 
@@ -25,7 +28,6 @@ _BEDROCK_DATASOURCE_ID: str = "DataSourceId"
 _BEDROCK_GUARDRAIL_ID: str = "GuardrailId"
 _BEDROCK_KNOWLEDGEBASE_ID: str = "KnowledgeBaseId"
 _GEN_AI_SYSTEM: str = "aws_bedrock"
-_GEN_AI_REQUEST_MODEL: str = "genAiReuqestModelId"
 _SECRET_ARN: str = "arn:aws:secretsmanager:us-west-2:000000000000:secret:testSecret-ABCDEF"
 _TOPIC_ARN: str = "topicArn"
 _STATE_MACHINE_ARN: str = "arn:aws:states:us-west-2:000000000000:stateMachine:testStateMachine"
@@ -211,12 +213,47 @@ class TestInstrumentationPatch(TestCase):
         bedrock_agent_runtime_sucess_attributes: Dict[str, str] = _do_on_success_bedrock("bedrock-agent-runtime")
         self.assertEqual(len(bedrock_agent_runtime_sucess_attributes), 0)
 
-        # BedrockRuntime
+        # BedrockRuntime - Amazon Titan Models
         self.assertTrue("bedrock-runtime" in _KNOWN_EXTENSIONS)
-        bedrock_runtime_attributes: Dict[str, str] = _do_extract_attributes_bedrock("bedrock-runtime")
-        self.assertEqual(len(bedrock_runtime_attributes), 2)
+        request_body = {
+            "textGenerationConfig": {
+                "maxTokenCount": 512,
+                "temperature":  0.9,
+                "topP": 0.75,
+            }
+        }
+        bedrock_runtime_attributes: Dict[str, str] = _do_extract_attributes_bedrock(
+            "bedrock-runtime", 
+            model_id="amazon.titan",
+            request_body=json.dumps(request_body)
+        )
+        self.assertEqual(len(bedrock_runtime_attributes), 5)
         self.assertEqual(bedrock_runtime_attributes["gen_ai.system"], _GEN_AI_SYSTEM)
-        self.assertEqual(bedrock_runtime_attributes["gen_ai.request.model"], _GEN_AI_REQUEST_MODEL)
+        self.assertEqual(bedrock_runtime_attributes["gen_ai.request.model"], "amazon.titan")
+        self.assertEqual(bedrock_runtime_attributes["gen_ai.request.max_tokens"], 512)
+        self.assertEqual(bedrock_runtime_attributes["gen_ai.request.temperature"], 0.9)
+        self.assertEqual(bedrock_runtime_attributes["gen_ai.request.top_p"], 0.75)
+        response_body = {
+            "inputTextTokenCount": 123,
+            "results": [{
+                "tokenCount": 456,
+                "outputText": "testing",
+                "completionReason": "FINISH",
+            }]
+        }
+        json_bytes = json.dumps(response_body).encode('utf-8')
+        body_bytes = BytesIO(json_bytes)
+        streaming_body = StreamingBody(body_bytes, len(json_bytes))
+        bedrock_runtime_success_attributes: Dict[str, str] = _do_on_success_bedrock(
+            "bedrock-runtime",
+            model_id="amazon.titan",
+            streaming_body=streaming_body
+        )
+        self.assertEqual(bedrock_runtime_success_attributes["gen_ai.usage.input_tokens"], 123)
+        self.assertEqual(bedrock_runtime_success_attributes["gen_ai.usage.output_tokens"], 456)
+        self.assertEqual(bedrock_runtime_success_attributes["gen_ai.response.finish_reasons"], ["FINISH"])
+
+        # TODO: Other foundational models
 
         # SecretsManager
         self.assertTrue("secretsmanager" in _KNOWN_EXTENSIONS)
@@ -385,26 +422,27 @@ def _do_extract_sqs_attributes() -> Dict[str, str]:
     return _do_extract_attributes(service_name, params)
 
 
-def _do_extract_attributes_bedrock(service, operation=None) -> Dict[str, str]:
+def _do_extract_attributes_bedrock(service, operation=None, model_id=None, request_body=None) -> Dict[str, str]:
     params: Dict[str, Any] = {
         "agentId": _BEDROCK_AGENT_ID,
         "dataSourceId": _BEDROCK_DATASOURCE_ID,
         "knowledgeBaseId": _BEDROCK_KNOWLEDGEBASE_ID,
         "guardrailId": _BEDROCK_GUARDRAIL_ID,
-        "modelId": _GEN_AI_REQUEST_MODEL,
+        "modelId": model_id,
+        "body": request_body,
     }
     return _do_extract_attributes(service, params, operation)
 
 
-def _do_on_success_bedrock(service, operation=None) -> Dict[str, str]:
+def _do_on_success_bedrock(service, operation=None, model_id=None, streaming_body=None) -> Dict[str, str]:
     result: Dict[str, Any] = {
         "agentId": _BEDROCK_AGENT_ID,
         "dataSourceId": _BEDROCK_DATASOURCE_ID,
         "knowledgeBaseId": _BEDROCK_KNOWLEDGEBASE_ID,
         "guardrailId": _BEDROCK_GUARDRAIL_ID,
-        "modelId": _GEN_AI_REQUEST_MODEL,
+        "body": streaming_body,
     }
-    return _do_on_success(service, result, operation)
+    return _do_on_success(service, result, operation, params={"modelId": model_id})
 
 
 def _do_extract_secretsmanager_attributes() -> Dict[str, str]:
