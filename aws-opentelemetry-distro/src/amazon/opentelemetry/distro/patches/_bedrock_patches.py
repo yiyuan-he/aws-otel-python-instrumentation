@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import abc
 import inspect
+import io
 import json
 from typing import Any, Dict, Optional
 
@@ -271,20 +272,29 @@ class _BedrockRuntimeExtension(_AwsSdkExtension):
             return
 
         if 'body' in result and isinstance(result['body'], StreamingBody):
+            original_body = None
             try:
-                # Read the entire content of the StreamingBody
-                body_content = result['body'].read()
-                # Decode the bytes to string and parse as JSON
-                response_body = json.loads(body_content.decode('utf-8'))
+                original_body = result['body']
+                body_content = original_body.read()
+                
+                # Use one stream for telemetry
+                stream = io.BytesIO(body_content)
+                telemetry_content = stream.read()
+                response_body = json.loads(telemetry_content.decode('utf-8'))
                 if "amazon.titan" in model_id:
                     self._handle_amazon_titan_response(span, response_body)
+                
+                # Replenish stream for downstream application use
+                new_stream = io.BytesIO(body_content)
+                result['body'] = StreamingBody(new_stream, len(body_content))
+                    
             except json.JSONDecodeError:
                 print("Error: Unable to parse the response body as JSON")
             except Exception as e:
                 print(f"Error processing response: {str(e)}")
             finally:
-                # Make sure to close the stream
-                result['body'].close()
+                if original_body is not None:
+                    original_body.close()
 
     def _handle_amazon_titan_response(self, span: Span, response_body: Dict[str, Any]):
         if "inputTextTokenCount" in response_body:
