@@ -2,13 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 import requests
 
 from amazon.opentelemetry.distro._utils import is_installed
+from opentelemetry.attributes import BoundedAttributes
 from opentelemetry.exporter.otlp.proto.http import Compression
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExportResult
 
 AWS_SERVICE = "xray"
 AWS_CLOUDWATCH_LOG_GROUP_ENV = "AWS_CLOUDWATCH_LOG_GROUP"
@@ -73,6 +76,36 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
             compression=compression,
             session=rsession,
         )
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        modified_spans = []
+
+        for span in spans:
+            # Create updated attributes
+            update_attributes = {}
+
+            # Copy all original attributes
+            for key, value in span.attributes.items():
+                update_attributes[key] = value
+
+            # Add test attribute
+            update_attributes["test.attribute"] = "test_value"
+
+            # Create a new span with updated attributes
+            if isinstance(span.attributes, BoundedAttributes):
+                span._attributes = BoundedAttributes(
+                    maxlen=span.attributes.maxlen,
+                    attributes=update_attributes,
+                    immutable=span.attributes._immutable,
+                    max_value_len=span.attributes.max_value_len
+                )
+            else:
+                span._attributes = update_attributes
+
+            modified_spans.append(span)
+
+        # Call the parent's export method
+        return super().export(modified_spans)
 
     # Overrides upstream's private implementation of _export. All behaviors are
     # the same except if the endpoint is an XRay OTLP endpoint, we will sign the request
