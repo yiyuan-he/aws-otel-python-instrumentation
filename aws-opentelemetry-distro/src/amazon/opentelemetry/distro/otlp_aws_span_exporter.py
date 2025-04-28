@@ -91,6 +91,11 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
             # Add test attribute
             update_attributes["test.attribute"] = "test_value"
 
+            if "traceloop.entity.input" in update_attributes.keys():
+                update_attributes["traceloop.entity.input"] = "s3_pointer"
+            if "traceloop.entity.output" in update_attributes.keys():
+                update_attributes["traceloop.entity.output"] = "s3_pointer"
+
             # Create a new span with updated attributes
             if isinstance(span.attributes, BoundedAttributes):
                 span._attributes = BoundedAttributes(
