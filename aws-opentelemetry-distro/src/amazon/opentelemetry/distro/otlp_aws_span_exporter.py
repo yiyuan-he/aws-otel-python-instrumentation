@@ -18,6 +18,24 @@ AWS_CLOUDWATCH_LOG_GROUP_ENV = "AWS_CLOUDWATCH_LOG_GROUP"
 AWS_CLOUDWATCH_LOG_STREAM_ENV = "AWS_CLOUDWATCH_LOG_STREAM"
 _logger = logging.getLogger(__name__)
 
+class LLOSenderClient:
+    """Skeleton client for handling Large Language Objects (LLO)"""
+
+    def __init__(self, bucket_name: str = "mock-bucket", region_name: Optional[str] = None):
+        self._bucket_name = bucket_name
+        self._logger = logging.getLogger(__name__)
+        self._logger.info(f"Initialized mock LLO sender client with bucket: {bucket_name}")
+
+    def upload(self, data: str, metadata: Dict[str, str]) -> str:
+        """Mock upload that returns a dummy S3 pointer"""
+        attribute_name = metadata.get("attribute_name", "unknown")
+        self._logger.debug(f"Mock upload of LLO attribute: {attribute_name}")
+        return f"s3://{self._bucket_name}/{metadata.get('trace_id', 'trace')}/{metadata.get('span_id', 'span')}/{attribute_name}"
+
+    def shutdown(self):
+        """Mock shutdown"""
+        self._logger.debug("Mock LLO sender client shutdown")
+
 
 class OTLPAwsSpanExporter(OTLPSpanExporter):
     """
@@ -66,6 +84,8 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
                 endpoint,
             )
 
+        self._llo_sender = LLOSenderClient(bucket_name="my-telemetry-bucket", region_name=self._aws_region)
+
         super().__init__(
             endpoint=endpoint,
             certificate_file=certificate_file,
@@ -84,17 +104,31 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
             # Create updated attributes
             update_attributes = {}
 
-            # Copy all original attributes
+            # Copy all original attributes and handle LLO data
             for key, value in span.attributes.items():
-                update_attributes[key] = value
+                if self._should_offload(key, value):
+                    metadata = {
+                        "trace_id": format(span.context.trace_id, 'x'),
+                        "span_id": format(span.context.span_id, 'x'),
+                        "attribute_name": key,
+                        "span_name": span.name
+                    }
 
-            # Add test attribute
-            update_attributes["test.attribute"] = "test_value"
+                    # Get pointer from LLO client
+                    # Q: How to handle if LLO client operation fails?
+                    try:
+                        pointer = self._llo_sender.upload(value, metadata)
 
-            if "traceloop.entity.input" in update_attributes.keys():
-                update_attributes["traceloop.entity.input"] = "s3_pointer"
-            if "traceloop.entity.output" in update_attributes.keys():
-                update_attributes["traceloop.entity.output"] = "s3_pointer"
+                        # Store pointer instead of original value
+                        update_attributes[key] = pointer
+                        _logger.debug(f"Offloaded LLO attribute {key}")
+                    except Exception as e:
+                        # If offloading fails, keep original value
+                        _logger.warning(f"Failed to offload LLO attribute {key}: {e}")
+                        update_attributes[key] = value
+                else:
+                    # Keep original value
+                    update_attributes[key] = value
 
             # Create a new span with updated attributes
             if isinstance(span.attributes, BoundedAttributes):
@@ -111,6 +145,21 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
 
         # Call the parent's export method
         return super().export(modified_spans)
+
+    def _should_offload(self, key, value):
+        """Determine if attribute should be offloaded to S3"""
+        if not isinstance(value, str):
+            return False
+
+        # Attributes to identify LLO
+        llo_attributes = [
+            "traceloop.entity.input", "traceloop.entity.output",
+        ]
+
+        # Check if attribute matches patterns for offloading
+        matches_pattern = any(pattern in key for pattern in llo_attributes)
+
+        return matches_pattern
 
     # Overrides upstream's private implementation of _export. All behaviors are
     # the same except if the endpoint is an XRay OTLP endpoint, we will sign the request
