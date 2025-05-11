@@ -23,6 +23,7 @@ from amazon.opentelemetry.distro.aws_metric_attributes_span_exporter_builder imp
 from amazon.opentelemetry.distro.aws_span_metrics_processor_builder import AwsSpanMetricsProcessorBuilder
 from amazon.opentelemetry.distro.exporter.otlp.aws.common.aws_auth_session import AwsAuthSession
 from amazon.opentelemetry.distro.otlp_udp_exporter import OTLPUdpSpanExporter
+from amazon.opentelemetry.distro.otlp_aws_genai_span_exporter import OTLPAwsGenAiSpanExporter
 from amazon.opentelemetry.distro.sampler.aws_xray_remote_sampler import AwsXRayRemoteSampler
 from amazon.opentelemetry.distro.scope_based_exporter import ScopeBasedPeriodicExportingMetricReader
 from amazon.opentelemetry.distro.scope_based_filtering_view import ScopeBasedRetainingView
@@ -90,6 +91,8 @@ SYSTEM_METRICS_INSTRUMENTATION_SCOPE_NAME = "opentelemetry.instrumentation.syste
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"
 OTEL_EXPORTER_OTLP_LOGS_HEADERS = "OTEL_EXPORTER_OTLP_LOGS_HEADERS"
+
+AGENT_OBSERVABILITY_ENABLED = "AGENT_OBSERVABILITY_ENABLED"
 
 AWS_TRACES_OTLP_ENDPOINT_PATTERN = r"https://xray\.([a-z0-9-]+)\.amazonaws\.com/v1/traces$"
 AWS_LOGS_OTLP_ENDPOINT_PATTERN = r"https://logs\.([a-z0-9-]+)\.amazonaws\.com/v1/logs$"
@@ -359,10 +362,22 @@ def _customize_span_exporter(span_exporter: SpanExporter, resource: Resource) ->
         _logger.info("Detected using AWS OTLP Traces Endpoint.")
 
         if isinstance(span_exporter, OTLPSpanExporter):
-            span_exporter = OTLPSpanExporter(
-                endpoint=traces_endpoint,
-                session=AwsAuthSession(traces_endpoint.split(".")[1], "xray"),
-            )
+            if _is_agent_observability_enabled():
+                logs_endpoint = os.getenv(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT)
+                logs_exporter = OTLPLogExporter(
+                    endpoint=logs_endpoint,
+                    compression=Compression.Gzip,
+                    session=AwsAuthSession(logs_endpoint.split(".")[1], "logs")
+                )
+                span_exporter = OTLPAwsGenAiSpanExporter(
+                    logs_exporter=logs_exporter,
+                    endpoint=traces_endpoint
+                )
+            else:
+                span_exporter = OTLPSpanExporter(
+                    endpoint=traces_endpoint,
+                    session=AwsAuthSession(traces_endpoint.split(".")[1], "xray"),
+                )
 
         else:
             _logger.warning(
@@ -518,6 +533,10 @@ def _is_application_signals_runtime_enabled():
 def _is_lambda_environment():
     # detect if running in AWS Lambda environment
     return AWS_LAMBDA_FUNCTION_NAME_CONFIG in os.environ
+
+
+def _is_agent_observability_enabled():
+    return os.environ.get(AGENT_OBSERVABILITY_ENABLED, "false").lower() == "true"
 
 
 def _is_aws_otlp_endpoint(otlp_endpoint: str = None, service: str = "xray") -> bool:
