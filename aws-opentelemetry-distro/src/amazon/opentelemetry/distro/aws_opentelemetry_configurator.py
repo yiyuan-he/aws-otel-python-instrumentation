@@ -23,6 +23,7 @@ from amazon.opentelemetry.distro.aws_metric_attributes_span_exporter_builder imp
 from amazon.opentelemetry.distro.aws_span_metrics_processor_builder import AwsSpanMetricsProcessorBuilder
 from amazon.opentelemetry.distro.exporter.otlp.aws.common.aws_auth_session import AwsAuthSession
 from amazon.opentelemetry.distro.otlp_udp_exporter import OTLPUdpSpanExporter
+from amazon.opentelemetry.distro.otlp_aws_genai_log_exporter import OTLPAwsGenAiLogExporter
 from amazon.opentelemetry.distro.otlp_aws_genai_span_exporter import OTLPAwsGenAiSpanExporter
 from amazon.opentelemetry.distro.sampler.aws_xray_remote_sampler import AwsXRayRemoteSampler
 from amazon.opentelemetry.distro.scope_based_exporter import ScopeBasedPeriodicExportingMetricReader
@@ -364,7 +365,7 @@ def _customize_span_exporter(span_exporter: SpanExporter, resource: Resource) ->
         if isinstance(span_exporter, OTLPSpanExporter):
             if _is_agent_observability_enabled():
                 logs_endpoint = os.getenv(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT)
-                logs_exporter = OTLPLogExporter(
+                logs_exporter = OTLPAwsGenAiLogExporter(
                     endpoint=logs_endpoint,
                     compression=Compression.Gzip,
                     session=AwsAuthSession(logs_endpoint.split(".")[1], "logs")
