@@ -111,7 +111,7 @@ class LLOHandler:
         """
         events = []
         span_ctx = span.context
-        gen_ai_system = span.attributes.get("gen_ai.request.model", "unknown")
+        gen_ai_system = span.attributes.get("gen_ai.system", "unknown")
 
         prompt_timestamp = span.start_time
         prompt_content_pattern = re.compile(r"^gen_ai\.prompt\.(\d+)\.content$")
