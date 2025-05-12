@@ -29,6 +29,11 @@ class LLOHandler:
         self._event_logger_provider = EventLoggerProvider(logger_provider=self._logger_provider)
         self._event_logger = self._event_logger_provider.get_event_logger("gen_ai.events")
 
+        self._exact_match_patterns = []
+        self._regex_match_patterns = [
+            r"^gen_ai\.prompt\.\d+\.content$"
+        ]
+
 
     def process_spans(self, spans: Sequence[ReadableSpan]) -> List[ReadableSpan]:
         """
@@ -39,8 +44,8 @@ class LLOHandler:
         modified_spans = []
 
         for span in spans:
-            self.emit_llo_attributes(span, span.attributes)
-            updated_attributes = self.filter_attributes(span.attributes)
+            self._emit_llo_attributes(span, span.attributes)
+            updated_attributes = self._filter_attributes(span.attributes)
 
             if isinstance(span.attributes, BoundedAttributes):
                 span._attributes = BoundedAttributes(
@@ -57,7 +62,7 @@ class LLOHandler:
         return modified_spans
 
 
-    def emit_llo_attributes(self, span: ReadableSpan, attributes: Dict[str, Any]) -> None:
+    def _emit_llo_attributes(self, span: ReadableSpan, attributes: Dict[str, Any]) -> None:
         """
         Extract, transform, and emit LLO attributes as Gen AI Events
         """
@@ -67,6 +72,29 @@ class LLOHandler:
         for event in all_events:
             self._event_logger.emit(event)
             _logger.debug(f"Emitted Gen AI Event: {event.name}")
+
+
+    def _filter_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Filter out attributes that contain LLO from the span's attributes.
+        """
+        filtered_attributes = {}
+
+        for key, value in attributes.items():
+            if not self._is_llo_attribute(key):
+                filtered_attributes[key] = value
+
+        return filtered_attributes
+
+
+    def _is_llo_attribute(self, key: str) -> bool:
+        """
+        Determine if a span attribute contains an LLO based on its key.
+        """
+        return (
+            any(pattern == key for pattern in self._exact_match_patterns) or
+            any(re.match(pattern, key) for pattern in self._regex_match_patterns)
+        )
 
 
     def _extract_gen_ai_prompt_events(self, span: ReadableSpan, attributes: Dict[str, Any]) -> List[Event]:
