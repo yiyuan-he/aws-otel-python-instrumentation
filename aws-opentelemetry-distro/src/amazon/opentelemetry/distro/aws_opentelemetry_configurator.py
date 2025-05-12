@@ -371,7 +371,8 @@ def _customize_span_exporter(span_exporter: SpanExporter, resource: Resource) ->
                 )
                 span_exporter = OTLPAwsGenAiSpanExporter(
                     logs_exporter=logs_exporter,
-                    endpoint=traces_endpoint
+                    endpoint=traces_endpoint,
+                    session=AwsAuthSession(traces_endpoint.split(".")[1], "xray"),
                 )
             else:
                 span_exporter = OTLPSpanExporter(
