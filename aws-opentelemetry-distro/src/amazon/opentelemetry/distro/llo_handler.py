@@ -22,6 +22,7 @@ OPENINFERENCE_OUTPUT_VALUE = "output.value"
 OPENLIT_PROMPT = "gen_ai.prompt"
 OPENLIT_COMPLETION = "gen_ai.completion"
 OPENLIT_REVISED_PROMPT = "gen_ai.content.revised_prompt"
+CREWAI_AGENT_ACTUAL_OUTPUT = "gen_ai.agent.actual_output"
 
 # Roles
 ROLE_SYSTEM = "system"
@@ -92,6 +93,7 @@ class LLOHandler:
             OPENLIT_REVISED_PROMPT,
             OPENINFERENCE_INPUT_VALUE,
             OPENINFERENCE_OUTPUT_VALUE,
+            CREWAI_AGENT_ACTUAL_OUTPUT,
         ]
 
         # Pre-compile regex patterns for better performance
@@ -231,6 +233,7 @@ class LLOHandler:
         all_events.extend(self._extract_traceloop_events(span, attributes, event_timestamp))
         all_events.extend(self._extract_openlit_span_event_attributes(span, attributes, event_timestamp))
         all_events.extend(self._extract_openinference_attributes(span, attributes, event_timestamp))
+        all_events.extend(self._extract_crewai_attributes(span, attributes, event_timestamp))
 
         for event in all_events:
             self._event_logger.emit(event)
@@ -609,6 +612,48 @@ class LLOHandler:
 
             event = self._get_gen_ai_event(
                 name=event_name, span_ctx=span_ctx, timestamp=output_timestamp, attributes=event_attributes, body=body
+            )
+
+            events.append(event)
+
+        return events
+
+    def _extract_crewai_attributes(
+        self, span: ReadableSpan, attributes: Dict[str, Any], event_timestamp: Optional[int] = None
+    ) -> List[Event]:
+        """
+        Extract Gen AI Events from CrewAI attributes such as gen_ai.agent.actual_output.
+
+        CrewAI attributes contain the actual output from CrewAI agents.
+        This method converts the attribute into appropriate Gen AI Events.
+
+        Args:
+            span: The source ReadableSpan containing the attributes
+            attributes: Dictionary of attributes to process
+            event_timestamp: Optional timestamp to override span timestamps
+
+        Returns:
+            List[Event]: Events created from CrewAI attributes
+        """
+        events = []
+        span_ctx = span.context
+        gen_ai_system = span.attributes.get("gen_ai.system", "unknown")
+
+        output_timestamp = self._get_timestamp(span, event_timestamp, is_input=False)
+
+        if CREWAI_AGENT_ACTUAL_OUTPUT in attributes:
+            event_attributes = {"gen_ai.system": gen_ai_system, "original_attribute": CREWAI_AGENT_ACTUAL_OUTPUT}
+
+            body = {"content": attributes[CREWAI_AGENT_ACTUAL_OUTPUT], "role": "assistant"}
+
+            event_name = GEN_AI_ASSISTANT_MESSAGE
+
+            event = self._get_gen_ai_event(
+                name=event_name,
+                span_ctx=span_ctx,
+                timestamp=output_timestamp,
+                attributes=event_attributes,
+                body=body,
             )
 
             events.append(event)
