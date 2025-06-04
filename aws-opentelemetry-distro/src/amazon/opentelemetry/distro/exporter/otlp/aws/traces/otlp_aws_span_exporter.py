@@ -32,7 +32,12 @@ class OTLPAwsSpanExporter(OTLPSpanExporter):
         self._logger_provider = logger_provider
 
         if endpoint:
-            self._aws_region = endpoint.split(".")[1]
+            # Extract region from endpoint: handles both xray.region.amazonaws.com and xray-beta.region.amazonaws.com
+            parts = endpoint.split(".")
+            if len(parts) >= 3 and "amazonaws.com" in endpoint:
+                # For xray-beta.region.amazonaws.com, region is at index 1
+                # For xray.region.amazonaws.com, region is also at index 1
+                self._aws_region = parts[1]
 
         OTLPSpanExporter.__init__(
             self,

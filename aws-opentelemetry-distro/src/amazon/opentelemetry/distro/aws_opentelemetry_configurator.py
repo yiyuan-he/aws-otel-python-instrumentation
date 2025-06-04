@@ -97,7 +97,7 @@ OTEL_EXPORTER_OTLP_LOGS_HEADERS = "OTEL_EXPORTER_OTLP_LOGS_HEADERS"
 
 AGENT_OBSERVABILITY_ENABLED = "AGENT_OBSERVABILITY_ENABLED"
 
-AWS_TRACES_OTLP_ENDPOINT_PATTERN = r"https://xray\.([a-z0-9-]+)\.amazonaws\.com/v1/traces$"
+AWS_TRACES_OTLP_ENDPOINT_PATTERN = r"https://xray(-beta)?\.([a-z0-9-]+)\.amazonaws\.com/v1/traces$"
 AWS_LOGS_OTLP_ENDPOINT_PATTERN = r"https://logs\.([a-z0-9-]+)\.amazonaws\.com/v1/logs$"
 
 AWS_OTLP_LOGS_GROUP_HEADER = "x-aws-log-group"
