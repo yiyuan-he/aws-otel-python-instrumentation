@@ -21,9 +21,9 @@ class TestAwsOpenTelemetryDistro(TestCase):
 
     def test_package_available(self):
         try:
-            require(["aws-opentelemetry-distro"])
+            require(["aws-opentelemetry-distro-genai-beta"])
         except DistributionNotFound:
-            self.fail("aws-opentelemetry-distro not installed")
+            self.fail("aws-opentelemetry-distro-genai-beta not installed")
 
     @patch("amazon.opentelemetry.distro.aws_opentelemetry_distro.get_aws_region")
     def test_configure_with_none_region(self, mock_get_aws_region):

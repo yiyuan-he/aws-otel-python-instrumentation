@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aws-opentelemetry-distro"
+name = "aws-opentelemetry-distro-genai-beta"
 dynamic = ["version"]
 description = "AWS OpenTelemetry Python Distro"
 readme = "README.rst"
