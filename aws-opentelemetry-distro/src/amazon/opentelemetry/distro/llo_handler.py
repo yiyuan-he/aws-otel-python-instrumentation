@@ -158,10 +158,6 @@ class LLOHandler:
 
         # Create a single consolidated event: one span -> one event
         span_ctx = span.context
-        gen_ai_system = span.attributes.get("gen_ai.system", "unknown")
-
-        # Use span end time as the event timestamp (represents completion)
-        timestamp = event_timestamp if event_timestamp is not None else span.end_time
 
         # Copy scope name from span
         scope_name = span.instrumentation_scope.name if span.instrumentation_scope else UNKNOWN_INSTRUMENTATION_SCOPE
@@ -202,8 +198,11 @@ class LLOHandler:
             (TRACELOOP_ENTITY_INPUT, ROLE_USER, "input"),
             (TRACELOOP_ENTITY_OUTPUT, ROLE_ASSISTANT, "output"),
             (TRACELOOP_CREW_TASKS_OUTPUT, ROLE_ASSISTANT, "output"),
-            (TRACELOOP_CREW_RESULT, ROLE_ASSISTANT, "result"),
+            (TRACELOOP_CREW_RESULT, ROLE_ASSISTANT, "output"),
         ]
+
+        traceloop_input_msg_pattern = re.compile(r"^gen_ai\.prompt\.(\d+)\.content$")
+        traceloop_output_msg_pattern = re.compile(r"^gen_ai\.completion\.(\d+)\.content$")
 
         if not any(attr_key in attributes for attr_key, _, _ in traceloop_attrs):
             return []
@@ -218,6 +217,40 @@ class LLOHandler:
                     }
                 )
 
+        input_messages = {}
+        for key, value in attributes.items():
+            match = traceloop_input_msg_pattern.match(key)
+            if match:
+                index = match.group(1)
+                role_key = f"gen_ai.prompt.{index}.role"
+                role = attributes.get(role_key, "unknown")
+                input_messages[index] = (value, role)
+
+        for index in sorted(input_messages.keys(), key=int):
+            value, role = input_messages[index]
+            traceloop_messages.append({
+                "content": value,
+                "role": role,
+                "source": "input"
+            })
+
+        output_messages = {}
+        for key, value in attributes.items():
+            match = traceloop_output_msg_pattern.match(key)
+            if match:
+                index = match.group(1)
+                role_key = f"gen_ai.completion.{index}.role"
+                role = attributes.get(role_key, "unknown")
+                output_messages[index] = (value, role)
+
+        for index in sorted(output_messages.keys(), key=int):
+            value, role = input_messages[index]
+            traceloop_messages.append({
+                "content": value,
+                "role": role,
+                "source": "output"
+            })
+
         return traceloop_messages
 
 
@@ -226,4 +259,53 @@ class LLOHandler:
         openinference_messages = []
 
         openinference_attrs = [
+            (OPENINFERENCE_INPUT_VALUE, ROLE_USER, "input"),
+            (OPENINFERENCE_OUTPUT_VALUE, ROLE_ASSISTANT, "output"),
         ]
+
+        openinference_input_msg_pattern = re.compile(r"^llm\.input_messages\.(\d+)\.message\.content$")
+        openinference_output_msg_pattern = re.compile(r"^llm\.output_messages\.(\d+)\.message\.content$")
+
+        for attr_key, role, source in openinference_attrs:
+            if attr_key in attributes:
+                openinference_messages.append({
+                    "content": attributes[attr_key],
+                    "role": role,
+                    "source": source
+                })
+
+        input_messages = {}
+        for key, value in attributes.items():
+            match = openinference_input_msg_pattern.match(key)
+            if match:
+                index = match.group(1)
+                role_key = f"llm.input_messages.{index}.message.role"
+                role = attributes.get(role_key, ROLE_USER)
+                input_messages[index] = (value, role)
+
+        for index in sorted(input_messages.keys(), key=int):
+            value, role = input_messages[index]
+            openinference_messages.append({
+                "content": value,
+                "role": role,
+                "source": "input"
+            })
+
+        output_messages = {}
+        for key, value in attributes.items():
+            match = openinference_output_msg_pattern.match(key)
+            if match:
+                index = match.group(1)
+                role_key = f"llm.output_messages.{index}.message.role"
+                role = attributes.get(role_key, ROLE_ASSISTANT)
+                output_messages[index] = (value, role)
+
+        for index in sorted(output_messages.keys(), key=int):
+            value, role = input_messages[index]
+            openinference_messages.append({
+                "content": value,
+                "role": role,
+                "source": "output"
+            })
+
+        return openinference_messages
