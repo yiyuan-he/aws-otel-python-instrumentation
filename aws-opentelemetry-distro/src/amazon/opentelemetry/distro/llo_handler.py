@@ -132,6 +132,11 @@ LLO_PATTERNS: Dict[str, PatternConfig] = {
         "role": ROLE_ASSISTANT,
         "source": "output",
     },
+    "llm.prompts": {
+        "type": PatternType.DIRECT,
+        "role": ROLE_USER,
+        "source": "prompt",
+    },
 }
 
 
@@ -253,21 +258,69 @@ class LLOHandler:
         sorted_keys = sorted(indexed_messages.keys(), key=lambda k: (k[0], k[1]))
         return [indexed_messages[k] for k in sorted_keys]
 
+    def _collect_llo_attributes_from_span(self, span: ReadableSpan) -> Dict[str, Any]:
+        """
+        Collect all LLO attributes from a span's attributes and events.
+
+        Args:
+            span: The span to collect LLO attributes from
+
+        Returns:
+            Dictionary of all LLO attributes found in the span
+        """
+        all_llo_attributes = {}
+
+        # Collect from span attributes
+        if span.attributes is not None:
+            for key, value in span.attributes.items():
+                if self._is_llo_attribute(key):
+                    all_llo_attributes[key] = value
+
+        # Collect from span events
+        if span.events:
+            for event in span.events:
+                if event.attributes:
+                    for key, value in event.attributes.items():
+                        if self._is_llo_attribute(key):
+                            all_llo_attributes[key] = value
+
+        return all_llo_attributes
+
+    # pylint: disable-next=no-self-use
+    def _update_span_attributes(self, span: ReadableSpan, filtered_attributes: types.Attributes) -> None:
+        """
+        Update span attributes, preserving BoundedAttributes if present.
+
+        Args:
+            span: The span to update
+            filtered_attributes: The filtered attributes to set
+        """
+        if filtered_attributes is not None and isinstance(span.attributes, BoundedAttributes):
+            span._attributes = BoundedAttributes(
+                maxlen=span.attributes.maxlen,
+                attributes=filtered_attributes,
+                immutable=span.attributes._immutable,
+                max_value_len=span.attributes.max_value_len,
+            )
+        else:
+            span._attributes = filtered_attributes
+
     def process_spans(self, spans: Sequence[ReadableSpan]) -> List[ReadableSpan]:
         """
         Processes a sequence of spans to extract and filter LLO attributes.
 
         For each span, this method:
-        1. Extracts LLO attributes and emits them as Gen AI Events
-        2. Filters out LLO attributes from the span to maintain privacy
-        3. Processes any LLO attributes in span events
+        1. Collects all LLO attributes from span attributes and all span events
+        2. Emits a single consolidated Gen AI Event with all collected LLO content
+        3. Filters out LLO attributes from the span and its events to maintain privacy
         4. Preserves non-LLO attributes in the span
 
         Handles LLO attributes from multiple frameworks:
         - Traceloop (indexed prompt/completion patterns and entity input/output)
-        - OpenLit (direct prompt/completion patterns)
+        - OpenLit (direct prompt/completion patterns, including from span events)
         - OpenInference (input/output values and structured messages)
         - Strands SDK (system prompts and tool results)
+        - CrewAI (tasks output and results)
 
         Args:
             spans: A sequence of OpenTelemetry ReadableSpan objects to process
@@ -278,43 +331,37 @@ class LLOHandler:
         modified_spans = []
 
         for span in spans:
+            # Collect all LLO attributes from both span attributes and events
+            all_llo_attributes = self._collect_llo_attributes_from_span(span)
+
+            # Emit a single consolidated event if we found any LLO attributes
+            if all_llo_attributes:
+                self._emit_llo_attributes(span, all_llo_attributes)
+
+            # Filter span attributes
+            filtered_attributes = None
             if span.attributes is not None:
-                self._emit_llo_attributes(span, span.attributes)
-                updated_attributes = self._filter_attributes(span.attributes)
-            else:
-                updated_attributes = None
+                filtered_attributes = self._filter_attributes(span.attributes)
 
-            if updated_attributes is not None and isinstance(span.attributes, BoundedAttributes):
-                span._attributes = BoundedAttributes(
-                    maxlen=span.attributes.maxlen,
-                    attributes=updated_attributes,
-                    immutable=span.attributes._immutable,
-                    max_value_len=span.attributes.max_value_len,
-                )
-            else:
-                span._attributes = updated_attributes
+            # Update span attributes
+            self._update_span_attributes(span, filtered_attributes)
 
-            self.process_span_events(span)
+            # Filter span events
+            self._filter_span_events(span)
 
             modified_spans.append(span)
 
         return modified_spans
 
-    def process_span_events(self, span: ReadableSpan) -> None:
+    def _filter_span_events(self, span: ReadableSpan) -> None:
         """
-        Process events within a span to extract and filter LLO attributes.
+        Filter LLO attributes from span events.
 
-        For each event in the span, this method:
-        1. Emits LLO attributes found in event attributes as Gen AI Events
-        2. Filters out LLO attributes from event attributes
-        3. Creates updated events with filtered attributes
-        4. Replaces the original span events with updated events
-
-        This ensures that LLO attributes are properly handled even when they appear
-        in span events rather than directly in the span's attributes.
+        This method removes LLO attributes from event attributes while preserving
+        the event structure and non-LLO attributes.
 
         Args:
-            span: The ReadableSpan to process events for
+            span: The ReadableSpan to filter events for
 
         Returns:
             None: The span is modified in-place
@@ -328,9 +375,6 @@ class LLOHandler:
             if not event.attributes:
                 updated_events.append(event)
                 continue
-
-            if event.attributes is not None:
-                self._emit_llo_attributes(span, event.attributes, event_timestamp=event.timestamp)
 
             updated_event_attributes = self._filter_attributes(event.attributes)
 
@@ -348,6 +392,38 @@ class LLOHandler:
                 updated_events.append(event)
 
         span._events = updated_events
+
+    # pylint: disable-next=no-self-use
+    def _group_messages_by_type(self, messages: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, str]]]:
+        """
+        Group messages into input and output categories based on role and source.
+
+        Args:
+            messages: List of message dictionaries with 'role', 'content', and 'source' keys
+
+        Returns:
+            Dictionary with 'input' and 'output' lists of messages
+        """
+        input_messages = []
+        output_messages = []
+
+        for message in messages:
+            role = message.get("role", "unknown")
+            content = message.get("content", "")
+            formatted_message = {"role": role, "content": content}
+
+            if role in [ROLE_SYSTEM, ROLE_USER]:
+                input_messages.append(formatted_message)
+            elif role == ROLE_ASSISTANT:
+                output_messages.append(formatted_message)
+            else:
+                # Route based on source for non-standard roles
+                if any(key in message.get("source", "") for key in ["completion", "output", "result"]):
+                    output_messages.append(formatted_message)
+                else:
+                    input_messages.append(formatted_message)
+
+        return {"input": input_messages, "output": output_messages}
 
     def _emit_llo_attributes(
         self, span: ReadableSpan, attributes: types.Attributes, event_timestamp: Optional[int] = None
@@ -393,44 +469,30 @@ class LLOHandler:
         if not all_messages:
             return
 
-        input_messages = []
-        output_messages = []
+        # Group messages into input/output categories
+        grouped_messages = self._group_messages_by_type(all_messages)
 
-        for message in all_messages:
-            role = message.get("role", "unknown")
-            content = message.get("content", "")
-
-            if role in [ROLE_SYSTEM, ROLE_USER]:
-                input_messages.append({"role": role, "content": content})
-            elif role == ROLE_ASSISTANT:
-                output_messages.append({"role": role, "content": content})
-            else:
-                if any(key in message.get("source", "") for key in ["completion", "output", "result"]):
-                    output_messages.append({"role": role, "content": content})
-                else:
-                    input_messages.append({"role": role, "content": content})
-
+        # Build event body
         event_body = {}
-        if input_messages:
-            event_body["input"] = {"messages": input_messages}
-        if output_messages:
-            event_body["output"] = {"messages": output_messages}
+        if grouped_messages["input"]:
+            event_body["input"] = {"messages": grouped_messages["input"]}
+        if grouped_messages["output"]:
+            event_body["output"] = {"messages": grouped_messages["output"]}
 
         if not event_body:
             return
 
-        span_ctx = span.context
+        # Create and emit the event
         timestamp = event_timestamp if event_timestamp is not None else span.end_time
-        scope_name = span.instrumentation_scope.name
-        event_logger = self._event_logger_provider.get_event_logger(scope_name)
+        event_logger = self._event_logger_provider.get_event_logger(span.instrumentation_scope.name)
 
         event = Event(
-            name=scope_name,
+            name=span.instrumentation_scope.name,
             timestamp=timestamp,
             body=event_body,
-            trace_id=span_ctx.trace_id,
-            span_id=span_ctx.span_id,
-            trace_flags=span_ctx.trace_flags,
+            trace_id=span.context.trace_id,
+            span_id=span.context.span_id,
+            trace_flags=span.context.trace_flags,
         )
 
         event_logger.emit(event)

@@ -97,7 +97,6 @@ class CloudWatchEMFExporter(MetricExporter):
         session = boto3.Session(region_name=aws_region)
         self.logs_client = session.client("logs", **kwargs)
 
-
     def _generate_log_stream_name(self) -> str:
         """Generate a unique log stream name."""
         import uuid
@@ -743,11 +742,11 @@ class CloudWatchEMFExporter(MetricExporter):
 
         except Exception as e:
             # Check if the error is due to missing log group or log stream
-            error_code = getattr(e, 'response', {}).get('Error', {}).get('Code')
-            
-            if error_code == 'ResourceNotFoundException':
+            error_code = getattr(e, "response", {}).get("Error", {}).get("Code")
+
+            if error_code == "ResourceNotFoundException":
                 logger.debug(f"Log group or stream not found, attempting to create them: {e}")
-                
+
                 # Try to create log group first
                 try:
                     self.logs_client.create_log_group(logGroupName=self.log_group_name)
@@ -761,8 +760,7 @@ class CloudWatchEMFExporter(MetricExporter):
                 # Try to create log stream
                 try:
                     self.logs_client.create_log_stream(
-                        logGroupName=self.log_group_name, 
-                        logStreamName=self.log_stream_name
+                        logGroupName=self.log_group_name, logStreamName=self.log_stream_name
                     )
                     logger.info(f"Created log stream: {self.log_stream_name}")
                 except self.logs_client.exceptions.ResourceAlreadyExistsException:
@@ -774,24 +772,26 @@ class CloudWatchEMFExporter(MetricExporter):
                 # Retry the put_log_events call
                 try:
                     response = self.logs_client.put_log_events(**put_log_events_input)
-                    
+
                     elapsed_ms = int((time.time() - start_time) * 1000)
                     logger.debug(
                         f"Successfully sent {len(batch['logEvents'])} log events after creating resources "
                         f"({batch['byteTotal'] / 1024:.2f} KB) in {elapsed_ms} ms"
                     )
-                    
+
                     return response
-                    
+
                 except Exception as retry_error:
                     logger.error(f"Failed to send log events after creating resources: {retry_error}")
                     import traceback
+
                     logger.error(traceback.format_exc())
                     raise
             else:
                 # For other errors, just re-raise
                 logger.error(f"Failed to send log events: {e}")
                 import traceback
+
                 logger.error(traceback.format_exc())
                 raise
 
