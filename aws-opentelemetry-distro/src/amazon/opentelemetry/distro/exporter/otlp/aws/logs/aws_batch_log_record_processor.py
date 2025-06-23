@@ -165,3 +165,10 @@ class AwsBatchLogRecordProcessor(BatchLogRecordProcessor):
         }
 
         return log.instrumentation_scope.name in gen_ai_instrumentations
+
+    def force_flush(self, timeout_millis: Optional[int] = None) -> bool:
+        if self._shutdown:
+            return False
+
+        self._export(BatchLogExportStrategy.EXPORT_AT_LEAST_ONE_BATCH)
+        return True
